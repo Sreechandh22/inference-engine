@@ -1,6 +1,15 @@
 # inference-engine
 
-A from-scratch LLM inference engine. Custom PagedAttention memory manager, continuous batching scheduler, and CUDA kernels — no vLLM, no HuggingFace inference backend.
+**21.2x faster serving than HuggingFace at 64 concurrent requests. Memory flat at 3 GB regardless of load.**
+
+Built a production-style LLM inference engine from scratch — the same ideas behind vLLM, implemented without using it.
+
+What I wrote from scratch:
+- **PagedAttention block manager** — KV cache in fixed-size pages, block table per sequence, ~4% memory waste vs ~60% with naive allocation
+- **Continuous batching scheduler** — waiting queue + running set, one GPU forward pass per token step over all active sequences
+- **Custom CUDA kernel** — `paged_attention_decode_batched`, grid `dim3(num_heads, num_seqs)`, gathers KV from non-contiguous physical blocks, GQA-aware
+- **TinyLlama transformer** — RoPE, SwiGLU, GQA, RMSNorm, loads pretrained weights
+- **OpenAI-compatible API** — `/v1/completions` with streaming SSE, drop-in for any OpenAI client
 
 ## Results
 
