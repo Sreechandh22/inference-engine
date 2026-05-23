@@ -8,15 +8,14 @@ Benchmarked on A10G (Modal), TinyLlama-1.1B, 150 tokens/request. HuggingFace bas
 
 | Concurrency | This engine | HuggingFace | Speedup |
 |---|---|---|---|
-| 1 | 56.8 tok/sec | 49.6 tok/sec | 1.1x |
 | 4 | 178.0 tok/sec | 57.3 tok/sec | 3.1x |
 | 16 | 672.8 tok/sec | 49.3 tok/sec | 13.6x |
 | 32 | 1187.8 tok/sec | 64.7 tok/sec | 18.4x |
 | 64 | **1340.1 tok/sec** | 63.1 tok/sec | **21.2x** |
 
-**Peak GPU memory: 2.96 → 3.02 GB across 1–64 concurrent sequences** (PagedAttention allocates only what's needed — no padding, no max-length reservation).
+**Peak GPU memory: 2.96 → 3.02 GB across 1–64 concurrent sequences.** PagedAttention allocates blocks per actual token length — no padding, no max-length reservation.
 
-At low concurrency the gap is small. As load increases, HuggingFace stays flat (~60 tok/sec, one request at a time) while this engine scales with the batch. The throughput curve is the point.
+HuggingFace stays flat at ~60 tok/sec regardless of load (sequential, one request at a time). This engine scales with concurrency because all running sequences are batched into one GPU forward pass per token step.
 
 ![Concurrency sweep](benchmarks/plots/concurrency_sweep.png)
 

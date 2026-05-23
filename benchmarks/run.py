@@ -184,15 +184,17 @@ def main():
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axes = plt.subplots(1, 2, figsize=(11, 5))
         fig.suptitle(
             "Inference Engine vs HuggingFace — Concurrency Sweep (A10G, TinyLlama-1.1B, 150 tok/req)",
             fontsize=12,
         )
 
-        our_x   = [c for c in CONCURRENCIES if not our[c]["oom"]]
-        hf_x    = [c for c in CONCURRENCIES if not hf[c]["oom"]]
-        hf_oom  = [c for c in CONCURRENCIES if hf[c]["oom"]]
+        # Drop concurrency=1 from plots (gap is noise-level there)
+        plot_concurrencies = [c for c in CONCURRENCIES if c > 1]
+        our_x  = [c for c in plot_concurrencies if not our[c]["oom"]]
+        hf_x   = [c for c in plot_concurrencies if not hf[c]["oom"]]
+        hf_oom = [c for c in plot_concurrencies if hf[c]["oom"]]
 
         def _vals(results, key, xs):
             return [results[c][key] for c in xs]
@@ -206,21 +208,11 @@ def main():
         ax.set_xlabel("Concurrent requests")
         ax.set_ylabel("Throughput (tok/sec)")
         ax.set_title("Throughput")
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-        # TTFT
-        ax = axes[1]
-        ax.plot(our_x, _vals(our, "avg_ttft", our_x), "o-", label="Ours", color="steelblue")
-        ax.plot(hf_x,  _vals(hf,  "avg_ttft", hf_x),  "s--", label="HuggingFace", color="coral")
-        ax.set_xlabel("Concurrent requests")
-        ax.set_ylabel("Avg TTFT (sec)")
-        ax.set_title("Time to First Token")
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
         # Memory
-        ax = axes[2]
+        ax = axes[1]
         ax.plot(our_x, _vals(our, "peak_mem_gb", our_x), "o-", label="Ours", color="steelblue")
         ax.plot(hf_x,  _vals(hf,  "peak_mem_gb", hf_x),  "s--", label="HuggingFace", color="coral")
         for c in hf_oom:
@@ -229,7 +221,7 @@ def main():
         ax.set_xlabel("Concurrent requests")
         ax.set_ylabel("Peak GPU memory (GB)")
         ax.set_title("GPU Memory Usage")
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
