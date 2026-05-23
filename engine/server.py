@@ -14,6 +14,7 @@ import uuid
 from typing import AsyncGenerator, List, Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -24,6 +25,13 @@ from engine.runner import GenerationConfig
 from engine.scheduler import Scheduler
 
 app = FastAPI(title="inference-engine")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://sreechandh22.github.io", "http://localhost:8000", "http://127.0.0.1:5500"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 # Global state — initialized on startup
 _scheduler: Optional[Scheduler] = None
