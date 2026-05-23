@@ -194,6 +194,10 @@ class CompletionResponse(BaseModel):
     usage: CompletionUsage
 
 
+def _apply_chat_template(prompt: str) -> str:
+    return f"<|system|>\nYou are a helpful assistant.\n<|user|>\n{prompt}\n<|assistant|>\n"
+
+
 @app.post("/v1/completions")
 async def v1_completions(req: CompletionRequest):
     greedy = req.temperature == 0.0
@@ -205,11 +209,12 @@ async def v1_completions(req: CompletionRequest):
     )
     completion_id = f"cmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
+    prompt = _apply_chat_template(req.prompt)
 
     if req.stream:
         async def _stream() -> AsyncGenerator[str, None]:
             async with _lock:
-                seq_id = _scheduler.add_request(req.prompt, config)
+                seq_id = _scheduler.add_request(prompt, config)
                 while _scheduler.has_work():
                     step = _scheduler.step()
                     token = step.get(seq_id)
@@ -231,7 +236,7 @@ async def v1_completions(req: CompletionRequest):
 
     # Non-streaming
     async with _lock:
-        seq_id = _scheduler.add_request(req.prompt, config)
+        seq_id = _scheduler.add_request(prompt, config)
         output = ""
         while _scheduler.has_work():
             step = _scheduler.step()

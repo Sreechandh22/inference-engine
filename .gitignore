@@ -8,5 +8,6 @@ build/
 *.pt
 *.bin
 *.safetensors
+ARCHITECTURE.md
 .cache/
 huggingface/
