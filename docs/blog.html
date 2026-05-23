@@ -293,59 +293,13 @@
   </p>
 
   <p>
-    The tradeoff: attention computation is now over <strong>non-contiguous memory</strong>. You can't just call <code>torch.matmul</code> over the KV cache. The physical blocks for a given sequence are scattered across the pool. This is where the custom CUDA kernel comes in.
-  </p>
-
-  <h2>Continuous Batching: The Scheduler</h2>
-
-  <p>
-    Static batching (the HuggingFace approach) groups requests into a batch before generation starts and processes them together. The batch is fixed for the entire generation. This means if one sequence in a batch finishes early, its GPU slot sits idle until the longest sequence in the batch completes.
-  </p>
-
-  <p>
-    <strong>Continuous batching</strong> fixes this. The scheduler maintains a waiting queue and a running set. On every token step:
-  </p>
-
-  <pre><code>def step(self) -> dict[int, str]:
-    # Prefill any new sequences that fit in memory
-    while self.waiting and self._can_allocate(self.waiting[0]):
-        seq = self.waiting.popleft()
-        self._prefill(seq)
-        self.running.append(seq)
-
-    # Batch all running sequences into one forward pass
-    batch = self._build_decode_batch(self.running)
-    logits = self.model.decode_batch(batch)
-
-    # Sample next token for each sequence
-    outputs = {}
-    finished = []
-    for seq in self.running:
-        token = self._sample(logits[seq.id], seq.config)
-        seq.tokens.append(token)
-        outputs[seq.id] = self.tokenizer.decode([token])
-        if self._is_done(seq):
-            finished.append(seq)
-
-    # Free finished sequences immediately
-    for seq in finished:
-        self.running.remove(seq)
-        self.block_manager.free(seq.id)
-
-    return outputs</code></pre>
-
-  <p>
-    The critical property: when a sequence finishes mid-step, its blocks are freed and a waiting request can be prefilled in the <em>next</em> step. The GPU is never idle waiting for stragglers. At 64 concurrent sequences, all 64 are batched into a single forward pass on every token step. The GPU processes them in parallel.
-  </p>
-
-  <p>
-    This is why the throughput scales with concurrency while HuggingFace stays flat. At concurrency=64, we're doing 1340 tok/sec. HuggingFace is at 63 tok/sec, essentially the same as concurrency=1, because it's still processing one request at a time.
+    The tradeoff: attention computation is now over <strong>non-contiguous memory</strong>. The physical blocks for a given sequence are scattered across the pool, so standard attention math no longer applies directly. This is where the custom CUDA kernel comes in.
   </p>
 
   <h2>The Custom CUDA Kernel</h2>
 
   <p>
-    Standard attention implementations assume the KV cache is contiguous. With PagedAttention it isn't. The blocks for a given sequence are scattered across the pool. You need a kernel that can gather KV from non-contiguous physical blocks via the block table, compute attention, and return the result.
+    You can't just call <code>torch.matmul</code> over a sequence's KV cache anymore. Standard attention assumes contiguous memory, but with PagedAttention the blocks for a given sequence are scattered across the pool. You need a kernel that gathers KV from non-contiguous physical blocks via the block table, computes attention, and returns the result.
   </p>
 
   <p>
@@ -391,6 +345,52 @@
 
   <p>
     Correctness is verified against a PyTorch reference implementation. Max absolute difference in float16: &lt;0.05 across all test cases.
+  </p>
+
+  <h2>Continuous Batching: The Scheduler</h2>
+
+  <p>
+    PagedAttention solves memory. Continuous batching solves throughput. Static batching (the HuggingFace approach) groups requests into a batch before generation starts and processes them together. The batch is fixed for the entire generation. This means if one sequence in a batch finishes early, its GPU slot sits idle until the longest sequence in the batch completes.
+  </p>
+
+  <p>
+    <strong>Continuous batching</strong> fixes this. The scheduler maintains a waiting queue and a running set. On every token step:
+  </p>
+
+  <pre><code>def step(self) -> dict[int, str]:
+    # Prefill any new sequences that fit in memory
+    while self.waiting and self._can_allocate(self.waiting[0]):
+        seq = self.waiting.popleft()
+        self._prefill(seq)
+        self.running.append(seq)
+
+    # Batch all running sequences into one forward pass
+    batch = self._build_decode_batch(self.running)
+    logits = self.model.decode_batch(batch)
+
+    # Sample next token for each sequence
+    outputs = {}
+    finished = []
+    for seq in self.running:
+        token = self._sample(logits[seq.id], seq.config)
+        seq.tokens.append(token)
+        outputs[seq.id] = self.tokenizer.decode([token])
+        if self._is_done(seq):
+            finished.append(seq)
+
+    # Free finished sequences immediately
+    for seq in finished:
+        self.running.remove(seq)
+        self.block_manager.free(seq.id)
+
+    return outputs</code></pre>
+
+  <p>
+    The critical property: when a sequence finishes mid-step, its blocks are freed and a waiting request can be prefilled in the <em>next</em> step. The GPU is never idle waiting for stragglers. At 64 concurrent sequences, all 64 are batched into a single forward pass on every token step. The GPU processes them in parallel.
+  </p>
+
+  <p>
+    This is why the throughput scales with concurrency while HuggingFace stays flat. At concurrency=64, we're doing 1340 tok/sec. HuggingFace is at 63 tok/sec, essentially the same as concurrency=1, because it's still processing one request at a time.
   </p>
 
   <h2>Benchmark Results</h2>
