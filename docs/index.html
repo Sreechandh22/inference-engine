@@ -40,7 +40,12 @@
       color: #e0e0e0;
       text-decoration: none;
       letter-spacing: 0.01em;
+      display: flex;
+      align-items: center;
+      gap: 7px;
     }
+
+    nav a.nav-title svg { flex-shrink: 0; }
 
     nav a.nav-title:hover { color: #fff; }
 
@@ -58,6 +63,13 @@
       width: 100%;
       max-width: 720px;
       margin-bottom: 24px;
+    }
+
+    .page-title h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 8px;
     }
 
     .page-title p {
@@ -228,6 +240,7 @@
 </nav>
 
 <div class="page-title">
+  <h1>LLM Inference Engine</h1>
   <p>From-scratch PagedAttention + continuous batching serving TinyLlama on an A10G. Built the same ideas behind vLLM — 21.2x faster than HuggingFace at 64 concurrent requests.</p>
 </div>
 
