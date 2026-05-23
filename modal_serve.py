@@ -20,7 +20,7 @@ image = (
 )
 
 
-@app.function(gpu="A10G", image=image, timeout=600, container_idle_timeout=300)
+@app.function(gpu="A10G", image=image, timeout=600, scaledown_window=300)
 @modal.asgi_app()
 def serve():
     import sys

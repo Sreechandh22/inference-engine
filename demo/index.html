@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inference Engine — Live Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f0f0f;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 20px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    header h1 {
+      font-size: 1.6rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      font-size: 0.9rem;
+      color: #666;
+    }
+
+    header a {
+      color: #4a9eff;
+      text-decoration: none;
+    }
+
+    header a:hover { text-decoration: underline; }
+
+    .card {
+      width: 100%;
+      max-width: 720px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 28px;
+    }
+
+    .pills {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    .pill {
+      background: #212121;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      color: #aaa;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      user-select: none;
+    }
+
+    .pill:hover { border-color: #4a9eff; color: #fff; }
+
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: #666;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    textarea {
+      width: 100%;
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-size: 0.95rem;
+      font-family: inherit;
+      padding: 12px 14px;
+      resize: vertical;
+      min-height: 90px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    textarea:focus { border-color: #4a9eff; }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 14px;
+    }
+
+    .slider-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.82rem;
+      color: #666;
+    }
+
+    input[type="range"] {
+      accent-color: #4a9eff;
+      width: 90px;
+    }
+
+    #token-val { color: #aaa; min-width: 24px; }
+
+    button {
+      margin-left: auto;
+      background: #4a9eff;
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 22px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    button:hover { background: #6ab4ff; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .output-wrap {
+      margin-top: 22px;
+      position: relative;
+    }
+
+    #output {
+      width: 100%;
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 0.95rem;
+      line-height: 1.65;
+      min-height: 120px;
+      white-space: pre-wrap;
+      color: #e0e0e0;
+    }
+
+    #output.empty { color: #3a3a3a; }
+
+    .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      background: #4a9eff;
+      vertical-align: text-bottom;
+      animation: blink 0.9s step-end infinite;
+    }
+
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .meta {
+      margin-top: 10px;
+      font-size: 0.78rem;
+      color: #444;
+      min-height: 18px;
+    }
+
+    .meta span { color: #666; }
+
+    .error { color: #ff6b6b; font-size: 0.85rem; margin-top: 10px; }
+
+    footer {
+      margin-top: 40px;
+      font-size: 0.8rem;
+      color: #444;
+      text-align: center;
+    }
+
+    footer a { color: #555; text-decoration: none; }
+    footer a:hover { color: #888; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Inference Engine</h1>
+  <p>From-scratch PagedAttention + continuous batching — <a href="https://github.com/Sreechandh22/inference-engine" target="_blank">source on GitHub</a></p>
+</header>
+
+<div class="card">
+  <div class="pills" id="pills">
+    <div class="pill" data-prompt="Explain how attention mechanisms work in neural networks:">Attention mechanisms</div>
+    <div class="pill" data-prompt="What is the difference between supervised and unsupervised learning?">Supervised vs unsupervised</div>
+    <div class="pill" data-prompt="Explain the concept of gradient descent:">Gradient descent</div>
+    <div class="pill" data-prompt="How does backpropagation work?">Backpropagation</div>
+    <div class="pill" data-prompt="What makes transformer models so powerful?">Transformers</div>
+  </div>
+
+  <label for="prompt">Prompt</label>
+  <textarea id="prompt" placeholder="Ask something about ML or AI..."></textarea>
+
+  <div class="controls">
+    <div class="slider-group">
+      <span>Tokens</span>
+      <input type="range" id="tokens" min="20" max="300" value="150" step="10" />
+      <span id="token-val">150</span>
+    </div>
+    <button id="btn" onclick="generate()">Generate</button>
+  </div>
+
+  <div class="output-wrap">
+    <div id="output" class="empty">Output will appear here...</div>
+    <div class="meta" id="meta"></div>
+    <div class="error" id="error"></div>
+  </div>
+</div>
+
+<footer>
+  <a href="https://github.com/Sreechandh22/inference-engine" target="_blank">GitHub</a> · Running on Modal A10G · Scales to zero when idle — first request may take ~60s
+</footer>
+
+<script>
+  const API = "https://sreechandh22--inference-engine-server-serve.modal.run";
+
+  // Pill click
+  document.getElementById("pills").addEventListener("click", e => {
+    const pill = e.target.closest(".pill");
+    if (pill) document.getElementById("prompt").value = pill.dataset.prompt;
+  });
+
+  // Token slider
+  const slider = document.getElementById("tokens");
+  const tokenVal = document.getElementById("token-val");
+  slider.addEventListener("input", () => tokenVal.textContent = slider.value);
+
+  async function generate() {
+    const prompt = document.getElementById("prompt").value.trim();
+    if (!prompt) return;
+
+    const btn = document.getElementById("btn");
+    const output = document.getElementById("output");
+    const meta = document.getElementById("meta");
+    const error = document.getElementById("error");
+
+    btn.disabled = true;
+    btn.textContent = "Generating...";
+    output.className = "";
+    output.innerHTML = '<span class="cursor"></span>';
+    meta.innerHTML = "";
+    error.textContent = "";
+
+    const startTime = Date.now();
+    let tokenCount = 0;
+    let firstTokenTime = null;
+    let text = "";
+
+    try {
+      const res = await fetch(`${API}/v1/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          max_tokens: parseInt(slider.value),
+          stream: true,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const lines = decoder.decode(value).split("\n");
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") break;
+
+          try {
+            const chunk = JSON.parse(data);
+            const token = chunk.choices?.[0]?.text ?? "";
+            if (token) {
+              if (firstTokenTime === null) firstTokenTime = Date.now() - startTime;
+              text += token;
+              tokenCount++;
+              output.innerHTML = text + '<span class="cursor"></span>';
+            }
+          } catch {}
+        }
+      }
+
+      output.textContent = text;
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const tps = (tokenCount / (elapsed)).toFixed(0);
+      meta.innerHTML = `<span>${tokenCount} tokens · ${elapsed}s · ${tps} tok/sec · TTFT ${(firstTokenTime/1000).toFixed(2)}s</span>`;
+
+    } catch (err) {
+      error.textContent = err.message.includes("Failed to fetch")
+        ? "Could not reach server — it may be cold starting. Wait 60s and try again."
+        : `Error: ${err.message}`;
+      output.textContent = "";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Generate";
+    }
+  }
+
+  // Enter to submit
+  document.getElementById("prompt").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) generate();
+  });
+</script>
+
+</body>
+</html>
