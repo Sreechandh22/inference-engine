@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.env
+*.pt
+*.bin
+*.safetensors
+benchmarks/plots/*.png
+ARCHITECTURE.md
