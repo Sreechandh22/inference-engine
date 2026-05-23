@@ -13,9 +13,8 @@ import time
 import uuid
 from typing import AsyncGenerator, List, Optional
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from engine.block_manager import BlockManager
@@ -26,12 +25,17 @@ from engine.scheduler import Scheduler
 
 app = FastAPI(title="inference-engine")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://sreechandh22.github.io", "http://localhost:8000", "http://127.0.0.1:5500"],
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
-)
+
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        response = Response()
+    else:
+        response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 # Global state — initialized on startup
 _scheduler: Optional[Scheduler] = None
