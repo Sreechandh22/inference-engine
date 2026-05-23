@@ -43,6 +43,28 @@ tests/
 
 **Custom CUDA kernel:** `paged_attention_decode_batched` — grid `dim3(num_heads, num_seqs)`, each block gathers KV from non-contiguous physical blocks via the block table, computes numerically-stable softmax, returns weighted V sum. Correctness tested against PyTorch reference (max diff < 0.05 in float16).
 
+## API
+
+OpenAI-compatible endpoint — any OpenAI client works as-is:
+
+```bash
+curl http://localhost:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Explain attention mechanisms:", "max_tokens": 100}'
+```
+
+```json
+{
+  "id": "cmpl-3f8a1c2d9e4b",
+  "object": "text_completion",
+  "model": "tinyllama",
+  "choices": [{"text": "Attention mechanisms allow...", "index": 0, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
+}
+```
+
+Streaming (`"stream": true`) returns SSE tokens as they're generated.
+
 ## Run
 
 ```bash
