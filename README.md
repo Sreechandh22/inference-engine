@@ -11,6 +11,20 @@ What I wrote from scratch:
 - **TinyLlama transformer** — RoPE, SwiGLU, GQA, RMSNorm, loads pretrained weights
 - **OpenAI-compatible API** — `/v1/completions` with streaming SSE, drop-in for any OpenAI client
 
+## Demo
+
+**[sreechandh22.github.io/inference-engine](https://sreechandh22.github.io/inference-engine/)** — live inference, tokens stream back in real time. Runs on an A10G via Modal (scales to zero when idle — first request takes ~60s cold start, subsequent requests are fast).
+
+Or hit the API directly:
+
+```bash
+curl https://sreechandh22--inference-engine-server-serve.modal.run/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Explain how attention mechanisms work:", "max_tokens": 100}'
+```
+
+First request takes ~60s (cold start — model load + kernel JIT compile). After that it's fast.
+
 ## Results
 
 Benchmarked on A10G (Modal), TinyLlama-1.1B, 150 tokens/request. HuggingFace baseline runs requests sequentially (no continuous batching).
