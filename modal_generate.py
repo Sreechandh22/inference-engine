@@ -23,8 +23,12 @@ PROMPTS = [
 def run_kernel_test():
     import sys
     sys.path.insert(0, "/root")
-    from tests.test_kernels import test_paged_attention_decode
+    from tests.test_kernels import (
+        test_paged_attention_decode,
+        test_batched_paged_attention_decode,
+    )
     test_paged_attention_decode()
+    test_batched_paged_attention_decode()
     return "PASSED"
 
 

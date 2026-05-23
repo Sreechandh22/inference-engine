@@ -8,6 +8,18 @@ from engine.block_manager import BlockManager
 from engine.runner import GenerationConfig
 from engine.sampling import greedy, top_p as top_p_sample
 
+_CHAT_MARKERS = ["<|assistant|>", "<|user|>", "<|system|>", "<|im_start|>", "<|im_end|>"]
+
+
+@dataclass
+class DecodeBatch:
+    """Per-step batched decode metadata, shared across all transformer layers."""
+    seq_ids: List[int]
+    positions: torch.Tensor    # [B] long
+    block_tables: torch.Tensor # [B, max_blocks] int32
+    seq_lens: torch.Tensor     # [B] int32
+    slot_mapping: torch.Tensor # [B] long — flat physical slot for KV write
+
 
 @dataclass
 class Sequence:
@@ -92,9 +104,10 @@ class Scheduler:
 
     def step(self) -> Dict[int, Optional[str]]:
         """
-        Run one token-generation iteration across all running sequences.
-        Returns {seq_id: token_str}.
-        None value means the sequence finished this step.
+        Run one token-generation iteration.
+        Prefill any new sequences individually, then run ALL decode-ready
+        sequences in a single batched forward pass.
+        Returns {seq_id: token_str}; None means the sequence finished this step.
         """
         self._admit_waiting()
         if not self.running:
@@ -103,9 +116,9 @@ class Scheduler:
         outputs: Dict[int, Optional[str]] = {}
         finished: List[Sequence] = []
 
+        # --- Phase 1: prefill any sequence that hasn't been prefilled ---
         for seq in self.running:
             if not seq.prefilled:
-                # Prefill: process the full prompt in one forward pass
                 input_ids = torch.tensor(seq.prompt_ids, dtype=torch.long, device=self.device)
                 positions = torch.arange(seq.prompt_len, dtype=torch.long, device=self.device)
                 with torch.no_grad():
@@ -114,11 +127,15 @@ class Scheduler:
                     )
                 seq.prefilled = True
 
+        # --- Phase 2: sample next token, run termination/preempt, collect batch ---
+        batch_seqs: List[Sequence] = []
+        batch_tokens: List[int] = []
+        for seq in self.running:
             next_token = seq.sample_next()
 
-            # Check termination (min 4 tokens before EOS is honoured)
             eos_allowed = len(seq.generated_ids) >= 4
-            if (eos_allowed and next_token == self.tokenizer.eos_token_id) or len(seq.generated_ids) >= seq.config.max_new_tokens:
+            if (eos_allowed and next_token == self.tokenizer.eos_token_id) \
+                    or len(seq.generated_ids) >= seq.config.max_new_tokens:
                 outputs[seq.seq_id] = None
                 finished.append(seq)
                 self.block_manager.free(seq.seq_id)
@@ -126,7 +143,6 @@ class Scheduler:
 
             seq.generated_ids.append(next_token)
 
-            # Check if we can append a KV slot; preempt if not
             if not self.block_manager.can_append(seq.seq_id):
                 self.block_manager.free(seq.seq_id)
                 seq.prefilled = False
@@ -136,25 +152,53 @@ class Scheduler:
                 outputs[seq.seq_id] = None
                 continue
 
-            self.block_manager.append_slot(seq.seq_id)
-            token_tensor = torch.tensor([next_token], dtype=torch.long, device=self.device)
-            cur_pos = self.block_manager.seq_lengths[seq.seq_id] - 1
-            position = torch.tensor([cur_pos], dtype=torch.long, device=self.device)
-            with torch.no_grad():
-                seq.logits = self.model(
-                    token_tensor, position, seq.seq_id, self.block_manager, is_prefill=False
-                )
-
-            # Incremental decode (SentencePiece-aware)
-            all_text = self.tokenizer.decode(seq.generated_ids, skip_special_tokens=True)
-            prev_text = self.tokenizer.decode(seq.generated_ids[:-1], skip_special_tokens=True)
-            delta = all_text[len(prev_text):]
-            # Strip TinyLlama chat template markers that aren't registered as special tokens
-            delta = delta.replace("<|assistant|>", "").replace("<|user|>", "").replace("<|system|>", "").replace("<|im_start|>", "").replace("<|im_end|>", "")
-            outputs[seq.seq_id] = delta if delta else ""
+            batch_seqs.append(seq)
+            batch_tokens.append(next_token)
 
         for seq in finished:
             if seq in self.running:
                 self.running.remove(seq)
+
+        if not batch_seqs:
+            return outputs
+
+        # --- Phase 3: reserve slots + build batch tensors ---
+        tpb = self.block_manager.tokens_per_block
+        slot_mapping = []
+        for seq in batch_seqs:
+            block_id, offset = self.block_manager.append_slot(seq.seq_id)
+            slot_mapping.append(block_id * tpb + offset)
+
+        positions = [self.block_manager.seq_lengths[s.seq_id] - 1 for s in batch_seqs]
+        seq_lens = [self.block_manager.seq_lengths[s.seq_id] for s in batch_seqs]
+        max_blocks = max(len(self.block_manager.block_tables[s.seq_id]) for s in batch_seqs)
+
+        bt = torch.zeros(len(batch_seqs), max_blocks, dtype=torch.int32, device=self.device)
+        for i, s in enumerate(batch_seqs):
+            blocks = self.block_manager.block_tables[s.seq_id]
+            bt[i, :len(blocks)] = torch.tensor(blocks, dtype=torch.int32, device=self.device)
+
+        batch = DecodeBatch(
+            seq_ids=[s.seq_id for s in batch_seqs],
+            positions=torch.tensor(positions, dtype=torch.long, device=self.device),
+            block_tables=bt,
+            seq_lens=torch.tensor(seq_lens, dtype=torch.int32, device=self.device),
+            slot_mapping=torch.tensor(slot_mapping, dtype=torch.long, device=self.device),
+        )
+        input_ids = torch.tensor(batch_tokens, dtype=torch.long, device=self.device)
+
+        # --- Phase 4: ONE batched forward pass over all decode sequences ---
+        with torch.no_grad():
+            logits = self.model.forward_decode(input_ids, batch, self.block_manager)  # [B, vocab]
+
+        # --- Phase 5: stash next-step logits + emit decoded deltas ---
+        for i, seq in enumerate(batch_seqs):
+            seq.logits = logits[i]
+            all_text = self.tokenizer.decode(seq.generated_ids, skip_special_tokens=True)
+            prev_text = self.tokenizer.decode(seq.generated_ids[:-1], skip_special_tokens=True)
+            delta = all_text[len(prev_text):]
+            for m in _CHAT_MARKERS:
+                delta = delta.replace(m, "")
+            outputs[seq.seq_id] = delta if delta else ""
 
         return outputs

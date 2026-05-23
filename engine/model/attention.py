@@ -194,3 +194,53 @@ class PagedAttention(nn.Module):
         attn = F.softmax(scores, dim=-1)
         out = torch.matmul(attn, V_t).permute(1, 0, 2).reshape(T, -1)
         return self.o_proj(out)
+
+    def forward_decode(
+        self,
+        hidden_states: torch.Tensor,   # [B, hidden_size] — one new token per sequence
+        batch,                          # DecodeBatch (duck-typed)
+        block_manager,
+    ) -> torch.Tensor:
+        """Batched decode: all running sequences' single queries in one pass."""
+        B = hidden_states.shape[0]
+
+        Q = self.q_proj(hidden_states).view(B, self.num_heads, self.head_dim)
+        K = self.k_proj(hidden_states).view(B, self.num_kv_heads, self.head_dim)
+        V = self.v_proj(hidden_states).view(B, self.num_kv_heads, self.head_dim)
+
+        cos, sin = self.rotary(batch.positions)  # [B, head_dim]
+        Q, K = apply_rope(Q, K, cos, sin)
+
+        # Scatter-write each sequence's new K, V into its physical slot
+        slot = batch.slot_mapping  # [B] long
+        kc = block_manager.key_cache[self.layer_idx].view(-1, self.num_kv_heads, self.head_dim)
+        vc = block_manager.value_cache[self.layer_idx].view(-1, self.num_kv_heads, self.head_dim)
+        kc[slot] = K
+        vc[slot] = V
+
+        kernel = _load_cuda_kernel()
+        if kernel is not None:
+            out = kernel.paged_attention_decode_batched(
+                Q.contiguous(),
+                block_manager.key_cache[self.layer_idx],
+                block_manager.value_cache[self.layer_idx],
+                batch.block_tables,   # [B, max_blocks] int32
+                batch.seq_lens,       # [B] int32
+                self.scale,
+            )  # [B, num_heads, head_dim]
+            return self.o_proj(out.reshape(B, -1))
+
+        # --- PyTorch fallback: per-sequence gather + attention ---
+        outs = []
+        for i, seq_id in enumerate(batch.seq_ids):
+            K_full, V_full = block_manager.read_kv(self.layer_idx, seq_id)
+            if self.num_groups > 1:
+                K_full = K_full.repeat_interleave(self.num_groups, dim=1)
+                V_full = V_full.repeat_interleave(self.num_groups, dim=1)
+            q_i = Q[i]                                  # [num_heads, head_dim]
+            scores = torch.einsum("hd,shd->hs", q_i.float(), K_full.float()) * self.scale
+            attn = F.softmax(scores, dim=-1)
+            out_i = torch.einsum("hs,shd->hd", attn, V_full.float())  # [num_heads, head_dim]
+            outs.append(out_i.to(hidden_states.dtype))
+        out = torch.stack(outs, dim=0)                  # [B, num_heads, head_dim]
+        return self.o_proj(out.reshape(B, -1))

@@ -71,6 +71,17 @@ class TransformerBlock(nn.Module):
         hidden_states = self.mlp(hidden_states)
         return residual + hidden_states
 
+    def forward_decode(self, hidden_states, batch, block_manager):
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = self.self_attn.forward_decode(hidden_states, batch, block_manager)
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        return residual + hidden_states
+
 
 class TinyLlamaModel(nn.Module):
     def __init__(self, config: ModelConfig = TINYLLAMA_CONFIG):
@@ -99,3 +110,14 @@ class TinyLlamaModel(nn.Module):
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)  # [seq_len, vocab_size]
         return logits[-1]  # return only last token's logits
+
+    def forward_decode(self, input_ids, batch, block_manager):
+        """Batched decode forward. input_ids: [B] one new token per sequence.
+        Returns logits [B, vocab_size]."""
+        hidden_states = self.embed_tokens(input_ids)  # [B, hidden_size]
+
+        for layer in self.layers:
+            hidden_states = layer.forward_decode(hidden_states, batch, block_manager)
+
+        hidden_states = self.norm(hidden_states)
+        return self.lm_head(hidden_states)  # [B, vocab_size]

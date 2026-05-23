@@ -168,6 +168,104 @@ __global__ void paged_attention_decode_kernel(
 }
 
 // ---------------------------------------------------------------------------
+// Batched decode kernel
+//
+// Same algorithm as the single-query kernel, with a sequence dimension added.
+// Grid:  (num_heads, num_seqs)   — blockIdx.x = head, blockIdx.y = seq
+// Each (head, seq) block computes attention for one sequence's single query
+// against that sequence's own KV cache (via its row of the block table).
+// ---------------------------------------------------------------------------
+
+__global__ void paged_attention_decode_batched_kernel(
+    const __half* __restrict__ q,           // [num_seqs, num_heads, head_dim]
+    const __half* __restrict__ key_cache,   // [num_blocks, tokens_per_block, num_kv_heads, head_dim]
+    const __half* __restrict__ value_cache,
+    const int*   __restrict__ block_tables, // [num_seqs, max_blocks]
+    const int*   __restrict__ seq_lens,     // [num_seqs]
+    __half*      __restrict__ output,       // [num_seqs, num_heads, head_dim]
+    int max_blocks,
+    int num_heads,
+    int num_kv_heads,
+    int head_dim,
+    int tokens_per_block,
+    float scale
+) {
+    int head    = blockIdx.x;
+    int seq     = blockIdx.y;
+    int kv_head = head / (num_heads / num_kv_heads);
+    int tid     = threadIdx.x;
+
+    int seq_len = seq_lens[seq];
+    const int* block_table = block_tables + seq * max_blocks;
+    const __half* q_seq = q + (seq * num_heads + head) * head_dim;
+    __half*       out_seq = output + (seq * num_heads + head) * head_dim;
+
+    extern __shared__ float smem[];
+    float* q_smem      = smem;
+    float* scores      = smem + head_dim;
+    float* reduce_smem = scores + MAX_SEQ_LEN;
+
+    // --- Load Q ---
+    for (int d = tid; d < head_dim; d += THREADS_PER_BLOCK)
+        q_smem[d] = __half2float(q_seq[d]);
+    __syncthreads();
+
+    // --- Scores ---
+    for (int t = tid; t < seq_len; t += THREADS_PER_BLOCK) {
+        int block_idx    = t / tokens_per_block;
+        int token_offset = t % tokens_per_block;
+        int phys_block   = block_table[block_idx];
+
+        const __half* k = key_cache
+            + (phys_block * tokens_per_block + token_offset) * num_kv_heads * head_dim
+            + kv_head * head_dim;
+
+        float score = 0.f;
+        for (int d = 0; d < head_dim; d++)
+            score += q_smem[d] * __half2float(k[d]);
+
+        scores[t] = score * scale;
+    }
+    __syncthreads();
+
+    // --- Softmax (numerically stable) ---
+    float local_max = -FLT_MAX;
+    for (int t = tid; t < seq_len; t += THREADS_PER_BLOCK)
+        local_max = fmaxf(local_max, scores[t]);
+    float global_max = block_reduce_max(local_max, reduce_smem);
+    __syncthreads();
+
+    float local_sum = 0.f;
+    for (int t = tid; t < seq_len; t += THREADS_PER_BLOCK) {
+        scores[t] = expf(scores[t] - global_max);
+        local_sum += scores[t];
+    }
+    float global_sum = block_reduce_sum(local_sum, reduce_smem);
+    __syncthreads();
+
+    for (int t = tid; t < seq_len; t += THREADS_PER_BLOCK)
+        scores[t] /= global_sum;
+    __syncthreads();
+
+    // --- Weighted sum of V ---
+    for (int d = tid; d < head_dim; d += THREADS_PER_BLOCK) {
+        float out_d = 0.f;
+        for (int t = 0; t < seq_len; t++) {
+            int block_idx    = t / tokens_per_block;
+            int token_offset = t % tokens_per_block;
+            int phys_block   = block_table[block_idx];
+
+            const __half* v = value_cache
+                + (phys_block * tokens_per_block + token_offset) * num_kv_heads * head_dim
+                + kv_head * head_dim;
+
+            out_d += scores[t] * __half2float(v[d]);
+        }
+        out_seq[d] = __float2half(out_d);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // C++ wrapper — called from Python
 // ---------------------------------------------------------------------------
 
@@ -211,10 +309,57 @@ torch::Tensor paged_attention_decode(
     return output;
 }
 
+torch::Tensor paged_attention_decode_batched(
+    torch::Tensor q,            // [num_seqs, num_heads, head_dim]          float16
+    torch::Tensor key_cache,    // [num_blocks, tpb, num_kv_heads, head_dim] float16
+    torch::Tensor value_cache,
+    torch::Tensor block_tables, // [num_seqs, max_blocks]  int32
+    torch::Tensor seq_lens,     // [num_seqs]              int32
+    float scale
+) {
+    TORCH_CHECK(q.scalar_type() == torch::kFloat16, "q must be float16");
+    TORCH_CHECK(q.is_cuda(), "q must be on CUDA");
+    TORCH_CHECK(q.dim() == 3, "q must be [num_seqs, num_heads, head_dim]");
+
+    int num_seqs         = q.size(0);
+    int num_heads        = q.size(1);
+    int head_dim         = q.size(2);
+    int num_kv_heads     = key_cache.size(2);
+    int tokens_per_block = key_cache.size(1);
+    int max_blocks       = block_tables.size(1);
+
+    auto output = torch::zeros({num_seqs, num_heads, head_dim}, q.options());
+
+    int smem_bytes = (head_dim + MAX_SEQ_LEN + MAX_WARPS) * sizeof(float);
+    dim3 grid(num_heads, num_seqs);  // blockIdx.x = head, blockIdx.y = seq
+
+    paged_attention_decode_batched_kernel<<<grid, THREADS_PER_BLOCK, smem_bytes>>>(
+        reinterpret_cast<const __half*>(q.data_ptr()),
+        reinterpret_cast<const __half*>(key_cache.data_ptr()),
+        reinterpret_cast<const __half*>(value_cache.data_ptr()),
+        block_tables.data_ptr<int>(),
+        seq_lens.data_ptr<int>(),
+        reinterpret_cast<__half*>(output.data_ptr()),
+        max_blocks,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        tokens_per_block,
+        scale
+    );
+
+    return output;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def(
         "paged_attention_decode",
         &paged_attention_decode,
         "PagedAttention single-query decode kernel (float16)"
+    );
+    m.def(
+        "paged_attention_decode_batched",
+        &paged_attention_decode_batched,
+        "PagedAttention batched decode kernel (float16)"
     );
 }
