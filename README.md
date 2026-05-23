@@ -4,17 +4,21 @@ A from-scratch LLM inference engine. Custom PagedAttention memory manager, conti
 
 ## Results
 
-Benchmarked on A10G (Modal), TinyLlama-1.1B, 16 concurrent requests, 150 max tokens:
+Benchmarked on A10G (Modal), TinyLlama-1.1B, 150 tokens/request. HuggingFace baseline runs requests sequentially (no continuous batching).
 
-| | This engine | HuggingFace pipeline |
-|---|---|---|
-| Throughput | **574.7 tok/sec** | 62.6 tok/sec |
-| Avg TTFT | **0.814s** | 2.396s |
-| Wall-clock (16 reqs) | **3.89s** | 38.35s |
+| Concurrency | This engine | HuggingFace | Speedup |
+|---|---|---|---|
+| 1 | 56.8 tok/sec | 49.6 tok/sec | 1.1x |
+| 4 | 178.0 tok/sec | 57.3 tok/sec | 3.1x |
+| 16 | 672.8 tok/sec | 49.3 tok/sec | 13.6x |
+| 32 | 1187.8 tok/sec | 64.7 tok/sec | 18.4x |
+| 64 | **1340.1 tok/sec** | 63.1 tok/sec | **21.2x** |
 
-**9.86x faster wall-clock. 2.94x lower time-to-first-token.**
+**Peak GPU memory: 2.96 → 3.02 GB across 1–64 concurrent sequences** (PagedAttention allocates only what's needed — no padding, no max-length reservation).
 
-HF pipeline runs 16 requests sequentially. This engine runs them concurrently with one GPU forward pass per token step — which is the point.
+At low concurrency the gap is small. As load increases, HuggingFace stays flat (~60 tok/sec, one request at a time) while this engine scales with the batch. The throughput curve is the point.
+
+![Concurrency sweep](benchmarks/plots/concurrency_sweep.png)
 
 ## What's inside
 
