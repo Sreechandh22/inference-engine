@@ -8,7 +8,5 @@ build/
 *.pt
 *.bin
 *.safetensors
-benchmarks/plots/*.png
-ARCHITECTURE.md
 .cache/
 huggingface/

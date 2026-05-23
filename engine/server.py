@@ -10,7 +10,8 @@ Endpoints:
 import asyncio
 import json
 import time
-from typing import AsyncGenerator, Optional
+import uuid
+from typing import AsyncGenerator, List, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -145,3 +146,100 @@ async def stream(req: GenerateRequest):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(token_generator(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible /v1/completions
+# ---------------------------------------------------------------------------
+
+class CompletionRequest(BaseModel):
+    model: str = "tinyllama"
+    prompt: str
+    max_tokens: int = 200
+    temperature: float = 1.0
+    top_p: float = 1.0
+    stream: bool = False
+
+
+class CompletionChoice(BaseModel):
+    text: str
+    index: int
+    finish_reason: str
+
+
+class CompletionUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class CompletionResponse(BaseModel):
+    id: str
+    object: str = "text_completion"
+    created: int
+    model: str
+    choices: List[CompletionChoice]
+    usage: CompletionUsage
+
+
+@app.post("/v1/completions")
+async def v1_completions(req: CompletionRequest):
+    greedy = req.temperature == 0.0
+    config = GenerationConfig(
+        max_new_tokens=req.max_tokens,
+        temperature=max(req.temperature, 1e-5),
+        top_p=req.top_p,
+        greedy=greedy,
+    )
+    completion_id = f"cmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    if req.stream:
+        async def _stream() -> AsyncGenerator[str, None]:
+            async with _lock:
+                seq_id = _scheduler.add_request(req.prompt, config)
+                while _scheduler.has_work():
+                    step = _scheduler.step()
+                    token = step.get(seq_id)
+                    if token is None:
+                        break
+                    token = _clean(token)
+                    if token:
+                        chunk = {
+                            "id": completion_id,
+                            "object": "text_completion",
+                            "created": created,
+                            "model": req.model,
+                            "choices": [{"text": token, "index": 0, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(_stream(), media_type="text/event-stream")
+
+    # Non-streaming
+    async with _lock:
+        seq_id = _scheduler.add_request(req.prompt, config)
+        output = ""
+        while _scheduler.has_work():
+            step = _scheduler.step()
+            token = step.get(seq_id)
+            if token is None:
+                break
+            output += token
+
+    output = _clean(output)
+    prompt_tokens = len(_scheduler.tokenizer.encode(req.prompt))
+    completion_tokens = len(_scheduler.tokenizer.encode(output))
+
+    return CompletionResponse(
+        id=completion_id,
+        created=created,
+        model=req.model,
+        choices=[CompletionChoice(text=output, index=0, finish_reason="stop")],
+        usage=CompletionUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+    )
