@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Building a Production LLM Inference Engine from Scratch</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f0f0f;
+      color: #e0e0e0;
+      font-family: "JetBrains Mono", monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 92px;
+      padding-bottom: 80px;
+    }
+
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 44px;
+      background: #0f0f0f;
+      border-bottom: 1px solid #1e1e1e;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 100;
+    }
+
+    nav a.nav-title {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #e0e0e0;
+      text-decoration: none;
+    }
+
+    nav a.nav-title:hover { color: #fff; }
+
+    nav div { display: flex; align-items: center; gap: 20px; }
+
+    nav a.nav-blog {
+      font-size: 0.82rem;
+      color: #666;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+
+    nav a.nav-blog:hover { color: #e0e0e0; }
+
+    nav a.nav-github {
+      display: flex;
+      align-items: center;
+      color: #666;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+
+    nav a.nav-github:hover { color: #fff; }
+
+    article {
+      width: 100%;
+      max-width: 720px;
+      padding: 0 20px;
+    }
+
+    .post-header {
+      margin-bottom: 48px;
+      padding-bottom: 32px;
+      border-bottom: 1px solid #1e1e1e;
+    }
+
+    .post-header h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.3;
+      margin-bottom: 16px;
+    }
+
+    .post-meta {
+      font-size: 0.78rem;
+      color: #444;
+    }
+
+    .post-meta span { color: #666; }
+
+    h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+      margin: 48px 0 16px;
+    }
+
+    h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #ccc;
+      margin: 32px 0 12px;
+    }
+
+    p {
+      font-size: 0.88rem;
+      line-height: 1.8;
+      color: #aaa;
+      margin-bottom: 16px;
+    }
+
+    p strong { color: #e0e0e0; font-weight: 600; }
+
+    a { color: #4a9eff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    pre {
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 20px 0;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.6;
+      color: #ccc;
+    }
+
+    code {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: 0.82rem;
+      color: #ccc;
+      font-family: "JetBrains Mono", monospace;
+    }
+
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: inherit;
+    }
+
+    .callout {
+      background: #141414;
+      border-left: 3px solid #4a9eff;
+      border-radius: 0 8px 8px 0;
+      padding: 16px 20px;
+      margin: 24px 0;
+    }
+
+    .callout p { margin: 0; color: #888; }
+    .callout p strong { color: #ccc; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 24px 0;
+      font-size: 0.82rem;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid #2a2a2a;
+      color: #666;
+      font-weight: 500;
+    }
+
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid #1a1a1a;
+      color: #aaa;
+    }
+
+    td strong { color: #e0e0e0; }
+
+    .section-divider {
+      border: none;
+      border-top: 1px solid #1e1e1e;
+      margin: 48px 0;
+    }
+
+    footer {
+      margin-top: 64px;
+      font-size: 0.78rem;
+      color: #444;
+      text-align: center;
+      padding: 0 20px;
+    }
+
+    footer a { color: #555; text-decoration: none; }
+    footer a:hover { color: #888; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="/inference-engine/" class="nav-title">Inference Engine</a>
+  <div>
+    <a href="/inference-engine/blog.html" class="nav-blog">blog</a>
+    <a href="https://github.com/Sreechandh22/inference-engine" target="_blank" class="nav-github" aria-label="GitHub">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+      </svg>
+    </a>
+  </div>
+</nav>
+
+<article>
+
+  <div class="post-header">
+    <h1>Building a Production LLM Inference Engine from Scratch</h1>
+    <div class="post-meta">
+      <span>PagedAttention · Continuous Batching · Custom CUDA Kernels</span>
+    </div>
+  </div>
+
+  <p>
+    I built an LLM inference engine from scratch. The same core ideas behind <a href="https://github.com/vllm-project/vllm" target="_blank">vLLM</a>, implemented without using it. The result: <strong>21.2x higher throughput than HuggingFace at 64 concurrent requests</strong>, with GPU memory holding flat at 3 GB regardless of load.
+  </p>
+
+  <p>
+    This post is about the systems decisions that made that number possible. Not a tutorial. An explanation of why each piece works the way it does.
+  </p>
+
+  <h2>The Problem with Naive LLM Serving</h2>
+
+  <p>
+    Before vLLM, the standard way to serve LLMs was simple: take a request, run a forward pass for each token until done, return the result. HuggingFace's <code>pipeline()</code> does exactly this. It works fine for one user. It falls apart completely at any real load.
+  </p>
+
+  <p>
+    Two things kill it:
+  </p>
+
+  <h3>1. Sequential execution</h3>
+
+  <p>
+    Each request blocks the GPU until it's done. If request A takes 3 seconds and request B arrives 1 second in, B waits 2 more seconds doing nothing, even though the GPU has capacity. At 64 concurrent users, you're essentially queuing everyone behind each other. HuggingFace stays flat at ~63 tok/sec regardless of how many requests arrive, because it can only process one at a time.
+  </p>
+
+  <h3>2. KV cache memory waste</h3>
+
+  <p>
+    During autoregressive generation, every transformer layer caches its key and value tensors for all previous tokens (the KV cache). This lets you avoid recomputing attention over the full context on every step. Instead you just compute attention for the new token against the cached history.
+  </p>
+
+  <p>
+    The problem: naive implementations pre-allocate KV cache for the <strong>maximum possible sequence length</strong>. If your max is 2048 tokens but the actual response is 150 tokens, you've wasted 93% of that allocation. With 10 concurrent requests, you're wasting 10x that. The GPU runs out of memory long before it runs out of compute.
+  </p>
+
+  <div class="callout">
+    <p><strong>Memory waste in practice:</strong> Naive allocation wastes ~60% of KV cache memory on padding and over-reservation. PagedAttention brings this to ~4%.</p>
+  </div>
+
+  <h2>PagedAttention: OS Paging for KV Cache</h2>
+
+  <p>
+    The key insight in the <a href="https://arxiv.org/abs/2309.06180" target="_blank">vLLM paper</a> is borrowed from operating systems: instead of contiguous pre-allocated memory per sequence, split the KV cache into fixed-size <strong>blocks</strong> (pages) and allocate them on demand.
+  </p>
+
+  <p>
+    Each sequence gets a <strong>block table</strong>, a mapping from logical block index to physical block index in the KV cache pool. Blocks are 16 tokens each. When a sequence needs more KV cache, the block manager allocates the next free physical block and adds it to that sequence's block table. When the sequence finishes, those blocks are returned to the free pool immediately.
+  </p>
+
+  <pre><code>class BlockManager:
+    def __init__(self, num_layers, num_kv_heads, head_dim, num_blocks, device):
+        # KV cache pool: [num_layers, 2, num_blocks, block_size, num_kv_heads, head_dim]
+        self.kv_cache = torch.zeros(
+            num_layers, 2, num_blocks, BLOCK_SIZE, num_kv_heads, head_dim,
+            dtype=torch.float16, device=device
+        )
+        self.free_blocks = list(range(num_blocks))
+        self.block_tables: dict[int, list[int]] = {}
+
+    def allocate(self, seq_id: int) -> int:
+        block = self.free_blocks.pop()
+        self.block_tables[seq_id].append(block)
+        return block
+
+    def free(self, seq_id: int):
+        self.free_blocks.extend(self.block_tables.pop(seq_id))</code></pre>
+
+  <p>
+    The waste now comes only from the last partial block per sequence, at most <code>block_size - 1</code> unused slots. With block_size=16, worst case is 15 wasted slots per sequence, or roughly 4% waste across a typical workload. Compare that to 60% with naive pre-allocation.
+  </p>
+
+  <p>
+    The tradeoff: attention computation is now over <strong>non-contiguous memory</strong>. You can't just call <code>torch.matmul</code> over the KV cache. The physical blocks for a given sequence are scattered across the pool. This is where the custom CUDA kernel comes in.
+  </p>
+
+  <h2>Continuous Batching: The Scheduler</h2>
+
+  <p>
+    Static batching (the HuggingFace approach) groups requests into a batch before generation starts and processes them together. The batch is fixed for the entire generation. This means if one sequence in a batch finishes early, its GPU slot sits idle until the longest sequence in the batch completes.
+  </p>
+
+  <p>
+    <strong>Continuous batching</strong> fixes this. The scheduler maintains a waiting queue and a running set. On every token step:
+  </p>
+
+  <pre><code>def step(self) -> dict[int, str]:
+    # Prefill any new sequences that fit in memory
+    while self.waiting and self._can_allocate(self.waiting[0]):
+        seq = self.waiting.popleft()
+        self._prefill(seq)
+        self.running.append(seq)
+
+    # Batch all running sequences into one forward pass
+    batch = self._build_decode_batch(self.running)
+    logits = self.model.decode_batch(batch)
+
+    # Sample next token for each sequence
+    outputs = {}
+    finished = []
+    for seq in self.running:
+        token = self._sample(logits[seq.id], seq.config)
+        seq.tokens.append(token)
+        outputs[seq.id] = self.tokenizer.decode([token])
+        if self._is_done(seq):
+            finished.append(seq)
+
+    # Free finished sequences immediately
+    for seq in finished:
+        self.running.remove(seq)
+        self.block_manager.free(seq.id)
+
+    return outputs</code></pre>
+
+  <p>
+    The critical property: when a sequence finishes mid-step, its blocks are freed and a waiting request can be prefilled in the <em>next</em> step. The GPU is never idle waiting for stragglers. At 64 concurrent sequences, all 64 are batched into a single forward pass on every token step. The GPU processes them in parallel.
+  </p>
+
+  <p>
+    This is why the throughput scales with concurrency while HuggingFace stays flat. At concurrency=64, we're doing 1340 tok/sec. HuggingFace is at 63 tok/sec, essentially the same as concurrency=1, because it's still processing one request at a time.
+  </p>
+
+  <h2>The Custom CUDA Kernel</h2>
+
+  <p>
+    Standard attention implementations assume the KV cache is contiguous. With PagedAttention it isn't. The blocks for a given sequence are scattered across the pool. You need a kernel that can gather KV from non-contiguous physical blocks via the block table, compute attention, and return the result.
+  </p>
+
+  <p>
+    I wrote <code>paged_attention_decode_batched</code> in CUDA C++, bound to Python via pybind11. The grid layout is <code>dim3(num_heads, num_seqs)</code>, one CUDA block per (head, sequence) pair. Each block:
+  </p>
+
+  <pre><code>__global__ void paged_attention_decode_batched(
+    float* __restrict__ output,          // [num_seqs, num_heads, head_dim]
+    const __half* __restrict__ q,        // [num_seqs, num_heads, head_dim]
+    const __half* __restrict__ kv_cache, // [num_layers, 2, num_blocks, block_size, num_kv_heads, head_dim]
+    const int* __restrict__ block_tables,// [num_seqs, max_blocks_per_seq]
+    const int* __restrict__ seq_lens,    // [num_seqs]
+    int layer_idx, int num_kv_heads, int head_dim, int block_size, int max_blocks
+) {
+    int head_idx = blockIdx.x;
+    int seq_idx  = blockIdx.y;
+    int kv_head  = head_idx / (gridDim.x / num_kv_heads); // GQA head mapping
+
+    int seq_len = seq_lens[seq_idx];
+    float scale = 1.0f / sqrtf((float)head_dim);
+
+    // Numerically stable online softmax (log-sum-exp trick)
+    float max_score = -1e9f, sum_exp = 0.0f;
+    // ... gather K from non-contiguous blocks, compute QK scores
+    // ... second pass: gather V, compute weighted sum
+}</code></pre>
+
+  <p>
+    Key implementation details:
+  </p>
+
+  <p>
+    <strong>GQA support:</strong> TinyLlama uses Grouped Query Attention, 32 query heads but only 4 KV heads. The kernel maps query head index to KV head index via integer division, so multiple query heads share the same KV block table entries.
+  </p>
+
+  <p>
+    <strong>Numerically stable softmax:</strong> Computing softmax over the full context requires a two-pass approach. First pass finds the max score (for numerical stability), second pass computes the weighted value sum. Standard online softmax with the log-sum-exp trick.
+  </p>
+
+  <p>
+    <strong>Non-contiguous KV gather:</strong> For each token position, the kernel looks up the physical block index from the block table (<code>block_tables[seq_idx][token / block_size]</code>), then reads the KV tensor at the corresponding physical offset. This is the core of PagedAttention. Indirection through the block table at kernel level.
+  </p>
+
+  <p>
+    Correctness is verified against a PyTorch reference implementation. Max absolute difference in float16: &lt;0.05 across all test cases.
+  </p>
+
+  <h2>Benchmark Results</h2>
+
+  <p>
+    Benchmarked on Modal A10G (24GB VRAM), TinyLlama-1.1B, 150 tokens per request. The HuggingFace baseline runs requests sequentially, no continuous batching, no PagedAttention.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Concurrency</th>
+        <th>This engine</th>
+        <th>HuggingFace</th>
+        <th>Speedup</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>4</td><td>178.0 tok/sec</td><td>57.3 tok/sec</td><td>3.1x</td></tr>
+      <tr><td>16</td><td>672.8 tok/sec</td><td>49.3 tok/sec</td><td>13.6x</td></tr>
+      <tr><td>32</td><td>1187.8 tok/sec</td><td>64.7 tok/sec</td><td>18.4x</td></tr>
+      <tr><td>64</td><td><strong>1340.1 tok/sec</strong></td><td>63.1 tok/sec</td><td><strong>21.2x</strong></td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    <strong>Peak GPU memory: 2.96 to 3.02 GB across 1 to 64 concurrent sequences.</strong> PagedAttention allocates blocks per actual token length. Memory usage is flat regardless of concurrency because we're not pre-allocating for max sequence length per request.
+  </p>
+
+  <p>
+    HuggingFace throughput is effectively constant (~60 tok/sec) because it's sequential. Concurrency doesn't help it. This engine scales because all running sequences are batched into one GPU forward pass per token step.
+  </p>
+
+  <hr class="section-divider" />
+
+  <p>
+    The full source, block manager, scheduler, CUDA kernel, transformer, benchmarks, is on <a href="https://github.com/Sreechandh22/inference-engine" target="_blank">GitHub</a>. The live demo runs on Modal at the link in the nav.
+  </p>
+
+</article>
+
+<footer>
+  <a href="https://github.com/Sreechandh22/inference-engine" target="_blank">GitHub</a> · Built by Sreechandh
+</footer>
+
+</body>
+</html>
