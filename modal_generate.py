@@ -4,9 +4,11 @@ import modal
 app = modal.App("inference-engine")
 
 image = (
-    modal.Image.debian_slim()
-    .pip_install("torch>=2.0.0", "transformers>=4.35.0", "accelerate>=0.24.0")
+    modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
+    .pip_install("torch>=2.0.0", "transformers>=4.35.0", "accelerate>=0.24.0", "ninja")
     .add_local_dir("engine", remote_path="/root/engine")
+    .add_local_dir("kernels", remote_path="/root/kernels")
+    .add_local_dir("tests", remote_path="/root/tests")
 )
 
 PROMPTS = [
@@ -15,6 +17,15 @@ PROMPTS = [
     "Describe how attention mechanisms work in neural networks:",
     "What are the main challenges in training large language models?",
 ]
+
+
+@app.function(gpu="A10G", image=image, timeout=300)
+def run_kernel_test():
+    import sys
+    sys.path.insert(0, "/root")
+    from tests.test_kernels import test_paged_attention_decode
+    test_paged_attention_decode()
+    return "PASSED"
 
 
 @app.function(gpu="A10G", image=image, timeout=600)
@@ -29,6 +40,11 @@ def run_scheduler(max_new_tokens: int = 100):
     from engine.model.transformer import TINYLLAMA_CONFIG
 
     model, tokenizer = load_model(device="cuda")
+
+    # Compile CUDA kernel before timing starts — JIT takes ~60s on first run
+    from engine.model.attention import _load_cuda_kernel
+    _load_cuda_kernel()
+
     cfg = TINYLLAMA_CONFIG
     block_manager = BlockManager(
         num_layers=cfg.num_hidden_layers,
@@ -57,8 +73,14 @@ def run_scheduler(max_new_tokens: int = 100):
     elapsed = time.perf_counter() - start
     throughput = total_tokens / elapsed
 
+    _chat_tokens = ["<|assistant|>", "<|user|>", "<|system|>", "<|im_start|>", "<|im_end|>"]
+    def _clean(text):
+        for t in _chat_tokens:
+            text = text.replace(t, "")
+        return text.strip()
+
     return {
-        "outputs": {PROMPTS[i]: outputs[sid] for i, sid in enumerate(seq_ids)},
+        "outputs": {PROMPTS[i]: _clean(outputs[sid]) for i, sid in enumerate(seq_ids)},
         "total_tokens": total_tokens,
         "elapsed_sec": round(elapsed, 2),
         "throughput_tok_per_sec": round(throughput, 1),
@@ -67,6 +89,10 @@ def run_scheduler(max_new_tokens: int = 100):
 
 @app.local_entrypoint()
 def main():
+    print("\n--- Phase 4: kernel correctness test ---")
+    status = run_kernel_test.remote()
+    print(f"Kernel test: {status}\n")
+
     result = run_scheduler.remote(max_new_tokens=100)
 
     print(f"\n{'='*60}")
