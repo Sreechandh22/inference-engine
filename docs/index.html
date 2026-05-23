@@ -54,29 +54,17 @@
 
     nav a.nav-github:hover { color: #fff; }
 
-    header {
-      text-align: center;
-      margin-bottom: 40px;
+    .page-title {
+      width: 100%;
+      max-width: 720px;
+      margin-bottom: 24px;
     }
 
-    header h1 {
-      font-size: 1.6rem;
-      font-weight: 600;
-      color: #fff;
-      margin-bottom: 8px;
-    }
-
-    header p {
-      font-size: 0.9rem;
+    .page-title p {
+      font-size: 0.88rem;
       color: #666;
+      line-height: 1.5;
     }
-
-    header a {
-      color: #4a9eff;
-      text-decoration: none;
-    }
-
-    header a:hover { text-decoration: underline; }
 
     .card {
       width: 100%;
@@ -239,10 +227,9 @@
   </a>
 </nav>
 
-<header>
-  <h1>Inference Engine</h1>
-  <p>From-scratch PagedAttention + continuous batching — <a href="https://github.com/Sreechandh22/inference-engine" target="_blank">source on GitHub</a></p>
-</header>
+<div class="page-title">
+  <p>From-scratch PagedAttention + continuous batching serving TinyLlama on an A10G. Built the same ideas behind vLLM — 21.2x faster than HuggingFace at 64 concurrent requests.</p>
+</div>
 
 <div class="card">
   <div class="pills" id="pills">
