@@ -2,53 +2,29 @@ import modal
 
 app = modal.App("inference-engine")
 
-image = modal.Image.debian_slim().pip_install(
-    "torch>=2.0.0",
-    "transformers>=4.35.0",
-    "accelerate>=0.24.0",
+image = (
+    modal.Image.debian_slim()
+    .pip_install("torch>=2.0.0", "transformers>=4.35.0", "accelerate>=0.24.0")
+    .add_local_dir("engine", remote_path="/root/engine")
 )
 
-@app.function(gpu="A10G", image=image, timeout=300)
+@app.function(gpu="A10G", image=image, timeout=600, secrets=[modal.Secret.from_name("huggingface")])
 def generate(prompt: str, max_new_tokens: int = 200):
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    import torch
 
-    model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        dtype=torch.float16,
-        device_map="cuda",
-    )
-    model.eval()
+    from engine.model.loader import load_model
+    from engine.runner import Runner, GenerationConfig
 
-    input_ids = tokenizer.encode(prompt, return_tensors="pt").to("cuda")
-    past_key_values = None
-    generated_tokens = []
+    model, tokenizer = load_model(device="cuda")
+    runner = Runner(model, tokenizer, device="cuda")
+    config = GenerationConfig(max_new_tokens=max_new_tokens, temperature=0.8, top_p=0.9)
 
-    for _ in range(max_new_tokens):
-        with torch.no_grad():
-            outputs = model(
-                input_ids=input_ids,
-                past_key_values=past_key_values,
-                use_cache=True,
-            )
-        logits = outputs.logits[0, -1, :]
-        past_key_values = outputs.past_key_values
-        next_token = logits.argmax(dim=-1).item()
-
-        if next_token == tokenizer.eos_token_id:
-            break
-
-        generated_tokens.append(next_token)
-        input_ids = torch.tensor([[next_token]], device="cuda")
-
-    return tokenizer.decode(generated_tokens, skip_special_tokens=True)
+    tokens = list(runner.generate(prompt, config))
+    return "".join(tokens)
 
 
 @app.local_entrypoint()
 def main():
     prompt = "Explain how a transformer model works in simple terms:"
-    print(f"Prompt: {prompt}\n")
+    print(f"Prompt: {prompt}\n\nResponse: ", end="", flush=True)
     result = generate.remote(prompt)
-    print(f"Response: {result}")
+    print(result)
