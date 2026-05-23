@@ -47,7 +47,7 @@ _CHAT_TOKENS = ["<|assistant|>", "<|user|>", "<|system|>", "<|im_start|>", "<|im
 def _clean(text: str) -> str:
     for t in _CHAT_TOKENS:
         text = text.replace(t, "")
-    return text.strip()
+    return text
 
 
 @app.on_event("startup")
