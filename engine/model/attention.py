@@ -1,8 +1,35 @@
 import math
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# JIT-compile the PagedAttention CUDA kernel on first use.
+# Falls back silently to the pure-PyTorch implementation if compilation fails.
+# ---------------------------------------------------------------------------
+_cuda_kernel = None
+
+def _load_cuda_kernel():
+    global _cuda_kernel
+    if _cuda_kernel is not None:
+        return _cuda_kernel
+    if not torch.cuda.is_available():
+        return None
+    try:
+        from torch.utils.cpp_extension import load
+        kernels_dir = os.path.join(os.path.dirname(__file__), "..", "..", "kernels")
+        _cuda_kernel = load(
+            name="paged_attn_cuda",
+            sources=[os.path.join(kernels_dir, "paged_attention.cu")],
+            extra_cuda_cflags=["-O2", "--use_fast_math"],
+            verbose=False,
+        )
+    except Exception as e:
+        print(f"[attention] CUDA kernel compile failed, using PyTorch fallback: {e}")
+        _cuda_kernel = None
+    return _cuda_kernel
 
 
 class RMSNorm(nn.Module):
@@ -108,24 +135,56 @@ class PagedAttention(nn.Module):
             # Write new token to its allocated slot
             token_pos = block_manager.seq_lengths[seq_id] - 1
             block_manager.write_kv(self.layer_idx, seq_id, token_pos, K[0], V[0])
-            # Gather full K, V from scattered blocks (the PagedAttention gather)
+
+            kernel = _load_cuda_kernel()
+            if kernel is not None:
+                # --- Custom CUDA kernel path ---
+                # Gathers K,V from non-contiguous blocks AND computes attention
+                # in one GPU pass. No Python gather, no intermediate tensors.
+                block_table_tensor = torch.tensor(
+                    block_manager.block_tables[seq_id],
+                    dtype=torch.int32,
+                    device=hidden_states.device,
+                )
+                out = kernel.paged_attention_decode(
+                    Q.squeeze(0).contiguous(),                     # [num_heads, head_dim]
+                    block_manager.key_cache[self.layer_idx],       # [num_blocks, tpb, num_kv_heads, head_dim]
+                    block_manager.value_cache[self.layer_idx],
+                    block_table_tensor,
+                    block_manager.seq_lengths[seq_id],
+                    self.scale,
+                )
+                # out: [num_heads, head_dim] → [1, num_heads * head_dim]
+                return self.o_proj(out.reshape(1, -1))
+
+            # --- PyTorch fallback ---
             K_full, V_full = block_manager.read_kv(self.layer_idx, seq_id)
 
-        # GQA: expand kv heads to match query heads
+            if self.num_groups > 1:
+                K_full = K_full.repeat_interleave(self.num_groups, dim=1)
+                V_full = V_full.repeat_interleave(self.num_groups, dim=1)
+
+            S = K_full.shape[0]
+            Q_t = Q.permute(1, 0, 2)
+            K_t = K_full.permute(1, 2, 0)
+            V_t = V_full.permute(1, 0, 2)
+            scores = torch.matmul(Q_t, K_t) * self.scale
+            attn = F.softmax(scores, dim=-1)
+            out = torch.matmul(attn, V_t).permute(1, 0, 2).reshape(T, -1)
+            return self.o_proj(out)
+
+        # Prefill path (shared)
         if self.num_groups > 1:
             K_full = K_full.repeat_interleave(self.num_groups, dim=1)
             V_full = V_full.repeat_interleave(self.num_groups, dim=1)
 
-        # Attention: Q [T, H, D] x K [S, H, D] -> [H, T, S]
         S = K_full.shape[0]
-        Q_t = Q.permute(1, 0, 2)          # [H, T, D]
-        K_t = K_full.permute(1, 2, 0)     # [H, D, S]
-        V_t = V_full.permute(1, 0, 2)     # [H, S, D]
+        Q_t = Q.permute(1, 0, 2)
+        K_t = K_full.permute(1, 2, 0)
+        V_t = V_full.permute(1, 0, 2)
+        scores = torch.matmul(Q_t, K_t) * self.scale
 
-        scores = torch.matmul(Q_t, K_t) * self.scale  # [H, T, S]
-
-        if is_prefill and T > 1:
-            # Causal mask for prefill
+        if T > 1:
             mask = torch.triu(
                 torch.full((T, S), float("-inf"), device=hidden_states.device, dtype=scores.dtype),
                 diagonal=1,
@@ -133,6 +192,5 @@ class PagedAttention(nn.Module):
             scores = scores + mask.unsqueeze(0)
 
         attn = F.softmax(scores, dim=-1)
-        out = torch.matmul(attn, V_t)      # [H, T, D]
-        out = out.permute(1, 0, 2).reshape(T, -1)  # [T, H*D]
+        out = torch.matmul(attn, V_t).permute(1, 0, 2).reshape(T, -1)
         return self.o_proj(out)

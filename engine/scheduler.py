@@ -116,8 +116,9 @@ class Scheduler:
 
             next_token = seq.sample_next()
 
-            # Check termination
-            if next_token == self.tokenizer.eos_token_id or len(seq.generated_ids) >= seq.config.max_new_tokens:
+            # Check termination (min 4 tokens before EOS is honoured)
+            eos_allowed = len(seq.generated_ids) >= 4
+            if (eos_allowed and next_token == self.tokenizer.eos_token_id) or len(seq.generated_ids) >= seq.config.max_new_tokens:
                 outputs[seq.seq_id] = None
                 finished.append(seq)
                 self.block_manager.free(seq.seq_id)
@@ -148,6 +149,8 @@ class Scheduler:
             all_text = self.tokenizer.decode(seq.generated_ids, skip_special_tokens=True)
             prev_text = self.tokenizer.decode(seq.generated_ids[:-1], skip_special_tokens=True)
             delta = all_text[len(prev_text):]
+            # Strip TinyLlama chat template markers that aren't registered as special tokens
+            delta = delta.replace("<|assistant|>", "").replace("<|user|>", "").replace("<|system|>", "").replace("<|im_start|>", "").replace("<|im_end|>", "")
             outputs[seq.seq_id] = delta if delta else ""
 
         for seq in finished:
