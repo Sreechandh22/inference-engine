@@ -260,3 +260,104 @@ async def v1_completions(req: CompletionRequest):
             total_tokens=prompt_tokens + completion_tokens,
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible /v1/chat/completions
+# ---------------------------------------------------------------------------
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str = "tinyllama"
+    messages: List[ChatMessage]
+    max_tokens: int = 200
+    temperature: float = 1.0
+    top_p: float = 1.0
+    stream: bool = False
+
+
+def _render_chat(messages: List[ChatMessage]) -> str:
+    system = next((m.content for m in messages if m.role == "system"), "You are a helpful assistant.")
+    parts = [f"<|system|>\n{system}\n"]
+    for m in messages:
+        if m.role == "user":
+            parts.append(f"<|user|>\n{m.content}\n")
+        elif m.role == "assistant":
+            parts.append(f"<|assistant|>\n{m.content}\n")
+    parts.append("<|assistant|>\n")
+    return "".join(parts)
+
+
+@app.post("/v1/chat/completions")
+async def v1_chat_completions(req: ChatCompletionRequest):
+    greedy = req.temperature == 0.0
+    config = GenerationConfig(
+        max_new_tokens=req.max_tokens,
+        temperature=max(req.temperature, 1e-5),
+        top_p=req.top_p,
+        greedy=greedy,
+    )
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+    prompt = _render_chat(req.messages)
+
+    if req.stream:
+        async def _stream() -> AsyncGenerator[str, None]:
+            base = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": req.model,
+            }
+            yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
+            async with _lock:
+                seq_id = _scheduler.add_request(prompt, config)
+                while _scheduler.has_work():
+                    step = _scheduler.step()
+                    token = step.get(seq_id)
+                    if token is None:
+                        break
+                    token = _clean(token)
+                    if token:
+                        chunk = {**base, "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}]}
+                        yield f"data: {json.dumps(chunk)}\n\n"
+            yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(_stream(), media_type="text/event-stream")
+
+    # Non-streaming
+    async with _lock:
+        seq_id = _scheduler.add_request(prompt, config)
+        output = ""
+        while _scheduler.has_work():
+            step = _scheduler.step()
+            token = step.get(seq_id)
+            if token is None:
+                break
+            output += token
+
+    output = _clean(output)
+    prompt_tokens = len(_scheduler.tokenizer.encode(prompt))
+    completion_tokens = len(_scheduler.tokenizer.encode(output))
+
+    return {
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": req.model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": output},
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    }
