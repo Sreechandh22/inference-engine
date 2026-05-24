@@ -322,11 +322,11 @@
     let text = "";
 
     try {
-      const res = await fetch(`${API}/v1/completions`, {
+      const res = await fetch(`${API}/v1/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt,
+          messages: [{ role: "user", content: prompt }],
           max_tokens: parseInt(slider.value),
           stream: true,
         }),
@@ -349,7 +349,7 @@
 
           try {
             const chunk = JSON.parse(data);
-            const token = chunk.choices?.[0]?.text ?? "";
+            const token = chunk.choices?.[0]?.delta?.content ?? "";
             if (token) {
               if (firstTokenTime === null) firstTokenTime = Date.now() - startTime;
               text += token;
