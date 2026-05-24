@@ -9,7 +9,7 @@ What I wrote from scratch:
 - **Continuous batching scheduler** — waiting queue + running set, one GPU forward pass per token step over all active sequences
 - **Custom CUDA kernel** — `paged_attention_decode_batched`, grid `dim3(num_heads, num_seqs)`, gathers KV from non-contiguous physical blocks, GQA-aware
 - **TinyLlama transformer** — RoPE, SwiGLU, GQA, RMSNorm, loads pretrained weights
-- **OpenAI-compatible API** — `/v1/completions` with streaming SSE, drop-in for any OpenAI client
+- **OpenAI-compatible API** — `/v1/chat/completions` (plus legacy `/v1/completions`) with streaming SSE, drop-in for any OpenAI client
 
 ## Demo
 
@@ -18,9 +18,9 @@ What I wrote from scratch:
 Or hit the API directly:
 
 ```bash
-curl https://sreechandh22--inference-engine-server-serve.modal.run/v1/completions \
+curl https://sreechandh22--inference-engine-server-serve.modal.run/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Explain how attention mechanisms work:", "max_tokens": 100}'
+  -d '{"messages": [{"role": "user", "content": "Explain how attention mechanisms work:"}], "max_tokens": 100}'
 ```
 
 First request takes ~60s (cold start — model load + kernel JIT compile). After that it's fast.
@@ -71,22 +71,22 @@ tests/
 OpenAI-compatible endpoint — any OpenAI client works as-is:
 
 ```bash
-curl http://localhost:8000/v1/completions \
+curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Explain attention mechanisms:", "max_tokens": 100}'
+  -d '{"messages": [{"role": "user", "content": "Explain attention mechanisms:"}], "max_tokens": 100}'
 ```
 
 ```json
 {
-  "id": "cmpl-3f8a1c2d9e4b",
-  "object": "text_completion",
+  "id": "chatcmpl-3f8a1c2d9e4b",
+  "object": "chat.completion",
   "model": "tinyllama",
-  "choices": [{"text": "Attention mechanisms allow...", "index": 0, "finish_reason": "stop"}],
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "Attention mechanisms allow..."}, "finish_reason": "stop"}],
   "usage": {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
 }
 ```
 
-Streaming (`"stream": true`) returns SSE tokens as they're generated.
+Streaming (`"stream": true`) returns SSE `chat.completion.chunk` deltas as tokens are generated. The legacy `/v1/completions` (text-completion format) is still available.
 
 ## Run
 
